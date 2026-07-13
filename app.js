@@ -801,15 +801,97 @@ function reportResults(score, total) {
   reported = true; saveProgress();
   const errors = [];
   results.forEach((r, i) => { if (r && !r.correct) errors.push(`№${i + 1} ${r.label}`); });
+  // detail — сам разбор: по нему ссылка `?r=ник.id` воссоздаёт, что ученик сделал
+  // на каждом шаге. Без него у Ди нет ссылки на разбор — нечего показывать.
+  const detail = results.map((r, i) => ({
+    n: i + 1,
+    label: r ? r.label : `Шаг ${i + 1}`,
+    diff: r ? r.diff : '',
+    ok: !!(r && r.correct),
+    wrong: (r && r.wrong) || [],
+    feedback: r ? r.feedback : null,
+  }));
   const hw = `${DATA.meta.kicker} — ${DATA.meta.title}`;
   const durationSec = startPerf != null ? Math.round((performance.now() - startPerf) / 1000) : null;
   const startedAt = startTs ? localIso(startTs) : null;
   try {
     fetch(HW_ENDPOINT, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token, hw, hw_id: HW_ID, score, total, errors, started_at: startedAt, duration_sec: durationSec }), keepalive: true
+      body: JSON.stringify({ token, hw, hw_id: HW_ID, score, total, errors, detail, started_at: startedAt, duration_sec: durationSec }), keepalive: true
     }).catch(() => {});
   } catch (e) {}
+}
+
+// ── РАЗБОР ────────────────────────────────────────────────────────────────────
+// Один и тот же вид карточек — и на финале ученику, и по ссылке `?r=ник.id` Ди.
+// Ошибочные шаги раскрываются: что было не так + разбор из data.js.
+
+function revItemsHtml(items) {
+  return items.map((r, i) => {
+    const ok = !!(r.correct !== undefined ? r.correct : r.ok);
+    const wrong = r.wrong || [];
+    const wrongLines = wrong.length
+      ? `<div class="rev-wrong-line" style="padding:9px 12px;margin-bottom:10px;border-radius:12px;background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.2);font-size:13px;line-height:1.7">${wrong.map(w => fmtInline(w)).join('<br>')}</div>`
+      : '';
+    const razbor = `<div class="rev-razbor-label">Разбор</div>${renderFeedback(r.feedback)}`;
+    return `
+      <div class="rev-item ${ok ? 'ok' : 'bad'}" data-i="${i}">
+        <div class="rev-head">
+          <span class="rev-mark">${ok ? '✅' : '❌'}</span>
+          <span class="rev-title">${r.label || ('Шаг ' + (i + 1))}</span>
+          <span class="rev-diff">${r.diff || ''}</span>
+          ${ok ? '' : '<span class="rev-toggle">показать ▾</span>'}
+        </div>
+        <div class="rev-body">${wrongLines}${razbor}</div>
+      </div>`;
+  }).join('');
+}
+
+function bindRevToggles(root) {
+  root.querySelectorAll('.rev-item.bad .rev-head').forEach(head => head.addEventListener('click', () => {
+    const item = head.closest('.rev-item');
+    const open = item.classList.toggle('open');
+    const tg = item.querySelector('.rev-toggle');
+    if (tg) tg.textContent = open ? 'скрыть ▴' : 'показать ▾';
+  }));
+}
+
+/** `?r=ник.id` — Ди (или ученик) открывает разбор конкретной попытки с сервера. */
+function showServerReview(code) {
+  document.getElementById('screen').hidden = true;
+  document.getElementById('hw-header').hidden = true;
+  const el = document.getElementById('final-screen');
+  el.classList.add('show');
+  el.innerHTML = '<p style="padding:30px;text-align:center;opacity:.7">Загружаю разбор…</p>';
+
+  const fail = msg => {
+    el.innerHTML = `<div class="lk-card" style="padding:22px"><p style="font-size:15px;line-height:1.6">${msg}</p></div>`;
+  };
+
+  fetch(`${HW_ENDPOINT}?r=${encodeURIComponent(code)}`)
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(res => {
+      if (!res.ok || !Array.isArray(res.detail) || !res.detail.length) return Promise.reject('empty');
+      const total = res.total || res.detail.length;
+      const score = res.score != null ? res.score : res.detail.filter(d => d.ok).length;
+      el.innerHTML = `
+        <div class="lk-card" style="padding:22px 18px">
+          <div class="fin-theme">🔍 Разбор попытки</div>
+          <div class="fin-tier">С первого раза: ${score} из ${total}</div>
+          ${revItemsHtml(res.detail)}
+        </div>
+        <div class="lk-sign" style="margin-top:22px">
+          <span class="lk-badge lk-badge-l">Λ</span>
+          <span class="lk-badge lk-badge-d">D.</span>
+        </div>
+        <div style="height:32px"></div>`;
+      bindRevToggles(el);
+      window.scrollTo(0, 0);
+    })
+    .catch(err => fail(
+      err === 404 ? 'По этой ссылке результата пока нет — ученик ещё не дошёл до конца.'
+      : err === 'empty' ? 'Разбор для этой попытки не сохранён (старый заход, до появления разборов). Следующее прохождение будет с полным разбором.'
+      : 'Не удалось загрузить разбор. Попробуй обновить страницу.'));
 }
 
 // ── ЭКРАН ИТОГОВ ──────────────────────────────────────────────────────────────
@@ -827,23 +909,7 @@ function showFinal() {
              : firstTryCount >= total - 1 ? '💪 Крепко держишь гиперболу!'
              : '🔁 Загляни в разборы — и прокрути ещё разок.';
 
-  const revHtml = results.map((r, i) => {
-    const mark = r.correct ? '✅' : '❌';
-    const wrongLines = (r.wrong && r.wrong.length)
-      ? `<div class="rev-wrong-line" style="padding:9px 12px;margin-bottom:10px;border-radius:12px;background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.2);font-size:13px;line-height:1.7">${r.wrong.map(w => fmtInline(w)).join('<br>')}</div>`
-      : '';
-    const razbor = `<div class="rev-razbor-label">Разбор</div>${renderFeedback(r.feedback)}`;
-    return `
-      <div class="rev-item ${r.correct ? 'ok' : 'bad'}" data-i="${i}">
-        <div class="rev-head">
-          <span class="rev-mark">${mark}</span>
-          <span class="rev-title">${r.label}</span>
-          <span class="rev-diff">${r.diff}</span>
-          ${r.correct ? '' : '<span class="rev-toggle">показать ▾</span>'}
-        </div>
-        <div class="rev-body">${wrongLines}${razbor}</div>
-      </div>`;
-  }).join('');
+  const revHtml = revItemsHtml(results);
 
   const f = DATA.final;
   const pct = total ? Math.round(firstTryCount / total * 100) : 0;
@@ -892,12 +958,7 @@ function showFinal() {
   const retry = document.getElementById('btn-retry');
   if (retry) retry.addEventListener('click', showResetConfirm);
 
-  el.querySelectorAll('.rev-item.bad .rev-head').forEach(head => head.addEventListener('click', () => {
-    const item = head.closest('.rev-item');
-    const open = item.classList.toggle('open');
-    const tg = item.querySelector('.rev-toggle');
-    if (tg) tg.textContent = open ? 'скрыть ▴' : 'показать ▾';
-  }));
+  bindRevToggles(el);
 }
 
 // ── ИНИЦИАЛИЗАЦИЯ ─────────────────────────────────────────────────────────────
@@ -942,6 +1003,9 @@ function init(data) {
   if (no)  no.addEventListener('click', hideResetConfirm);
 
   const qs = new URLSearchParams(location.search);
+  // `?r=ник.id` — режим разбора (Ди смотрит попытку ученика). Тренажёр не запускаем.
+  const rev = (qs.get('r') || '').slice(0, 60);
+  if (rev) { showServerReview(rev); return; }
   if (qs.get('reset') === '1') clearProgress();
   allowSend = qs.get('send') === '1';
   const g = parseInt(qs.get('g') || qs.get('goto'), 10);
