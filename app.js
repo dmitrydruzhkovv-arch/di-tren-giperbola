@@ -662,8 +662,17 @@ function saveProgress() {
 function loadProgress() { try { return JSON.parse(localStorage.getItem(progKey()) || 'null'); } catch (e) { return null; } }
 function clearProgress() { try { localStorage.removeItem(progKey()); } catch (e) {} }
 
-function recordResult(task, correct, wrong) {
-  results[idx] = { label: task.label, diff: task.difficulty, correct, wrong: wrong || [], feedback: task.feedback };
+function recordResult(task, correct, wrong, res) {
+  // Снимок задания для разбора (стандарт: условие → ответ ученика → правильный → разбор).
+  // pick/answer отдают сами механики; если механика их не отдала — в разборе покажутся
+  // строки wrong[] («ты: 5 · верно: 7»), пусто не будет.
+  results[idx] = {
+    label: task.label, diff: task.difficulty, correct, wrong: wrong || [], feedback: task.feedback,
+    cond: task.intro || task.cond || '',
+    image: task.image || '',
+    pick: res && res.pick !== undefined ? res.pick : undefined,
+    answer: res && res.answer !== undefined ? res.answer : undefined,
+  };
   if (correct) { firstTryCount++; combo++; } else combo = 0;
   updateCombo();
   document.getElementById('prog-fill').style.width = `${((idx + 1) / DATA.tasks.length) * 100}%`;
@@ -764,7 +773,7 @@ function render() {
     cardReact(card, res.correct);
     document.getElementById(`fb-${task.id}`).classList.add('show');
     checkBtn.disabled = true; checkBtn.hidden = true; nextBtn.hidden = false;
-    recordResult(task, res.correct, res.wrong);
+    recordResult(task, res.correct, res.wrong, res);
   });
 }
 
