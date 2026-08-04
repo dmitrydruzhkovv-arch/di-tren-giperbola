@@ -670,6 +670,7 @@ function recordResult(task, correct, wrong, res) {
     label: task.label, diff: task.difficulty, correct, wrong: wrong || [], feedback: task.feedback,
     cond: task.intro || task.cond || '',
     image: task.image || '',
+    snap: HwCore.snap(document.getElementById(`body-${task.id}`)),
     pick: res && res.pick !== undefined ? res.pick : undefined,
     answer: res && res.answer !== undefined ? res.answer : undefined,
   };
